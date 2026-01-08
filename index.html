@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>客群定位与体验地图生成助手</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Marked.js for Markdown parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        /* 思考中动画样式 */
+        .typing-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+        }
+        
+        .typing-indicator .dot {
+            width: 8px;
+            height: 8px;
+            background: linear-gradient(135deg, #9333ea, #6366f1);
+            border-radius: 50%;
+            animation: typingBounce 1.4s infinite ease-in-out both;
+        }
+        
+        .typing-indicator .dot:nth-child(1) {
+            animation-delay: -0.32s;
+        }
+        
+        .typing-indicator .dot:nth-child(2) {
+            animation-delay: -0.16s;
+        }
+        
+        .typing-indicator .dot:nth-child(3) {
+            animation-delay: 0s;
+        }
+        
+        @keyframes typingBounce {
+            0%, 80%, 100% {
+                transform: scale(0.6);
+                opacity: 0.5;
+            }
+            40% {
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+        
+        /* 思考气泡入场动画 */
+        .thinking-bubble {
+            animation: bubbleFadeIn 0.3s ease-out;
+        }
+        
+        @keyframes bubbleFadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        /* 思考文字动画 */
+        .thinking-text {
+            font-size: 13px;
+            color: #6b7280;
+            margin-left: 8px;
+            animation: textPulse 2s infinite ease-in-out;
+        }
+        
+        @keyframes textPulse {
+            0%, 100% {
+                opacity: 0.6;
+            }
+            50% {
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 h-screen flex flex-col">
+    <!-- Header -->
+    <header class="bg-white border-b border-gray-200 px-6 py-4 sticky top-0 z-10 shrink-0">
+        <h1 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+            ✨ 客群定位与体验地图生成助手
+        </h1>
+    </header>
+
+    <!-- Chat Area -->
+    <div id="chat-container" class="flex-1 overflow-y-auto p-4 scroll-smooth">
+        <div id="messages-list" class="space-y-4 pb-4 max-w-4xl mx-auto">
+            <!-- Messages will be inserted here -->
+        </div>
+        
+        <!-- Loading Indicator 已移除，改用气泡形式的思考动画 -->
+        
+        <div id="messages-end"></div>
+    </div>
+
+    <!-- Input Area -->
+    <div class="bg-white border-t border-gray-200 p-4 shrink-0">
+        <div class="max-w-3xl mx-auto relative">
+            <form id="chat-form" class="relative flex items-end gap-2 bg-gray-50 border border-gray-300 rounded-xl p-2 focus-within:ring-2 focus-within:ring-purple-500 focus-within:border-transparent transition-all">
+                <textarea
+                    id="chat-input"
+                    placeholder="输入你的需求..."
+                    class="w-full bg-transparent border-none focus:outline-none resize-none max-h-32 min-h-[44px] py-3 px-2 text-gray-800 placeholder:text-gray-400"
+                    rows="1"
+                ></textarea>
+                <button
+                    type="submit"
+                    id="send-btn"
+                    disabled
+                    class="p-2 rounded-lg bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mb-1 shrink-0"
+                >
+                    <i data-lucide="send" class="w-5 h-5"></i>
+                </button>
+            </form>
+<!--            <p class="text-xs text-center text-gray-400 mt-2">-->
+<!--                AI 内容由 Coze 智能体生成，仅供参考。-->
+<!--            </p>-->
+        </div>
+    </div>
+
+    <script>
+        // ========== Coze API 配置 ==========
+        // 直接在前端配置 API 密钥，无需启动服务器即可使用
+        const COZE_CONFIG = {
+            accessToken: "pat_njYeNvNAgBz08OrQIlCztE89uBYQFS0t36JHeBzDpE3SCuSY8zslv5ywCWulELnN",
+            botId: "7582524379042054187",
+            apiUrl: "https://api.coze.cn/v3/chat"
+        };
+
+        // 初始化 Lucide 图标
+        lucide.createIcons();
+
+        // 状态管理
+        const state = {
+            messages: [
+                {
+                    id: 'welcome',
+                    role: 'assistant',
+                    content: `您好！我是您的客群定位与体验地图生成助手\n\n请您为我提供产品的基本信息，包括但不仅限于产品定位、价格段、宣传渠道、销售渠道、使用场景等~`
+                }
+            ],
+            isLoading: false,
+            userId: getUserId(),
+            messageQueue: [],
+            isTyping: false,
+            lastProcessedIndex: 0,
+            currentMessageId: null,
+            currentMessageContent: ''
+        };
+
+        // DOM 元素
+        const messagesList = document.getElementById('messages-list');
+        const chatContainer = document.getElementById('chat-container');
+        const messagesEnd = document.getElementById('messages-end');
+        const chatForm = document.getElementById('chat-form');
+        const chatInput = document.getElementById('chat-input');
+        const sendBtn = document.getElementById('send-btn');
+        
+        // 当前的思考指示器元素
+        let currentTypingIndicator = null;
+
+        // 获取或生成 User ID
+        function getUserId() {
+            let userId = localStorage.getItem('coze_user_id');
+            if (!userId) {
+                userId = 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                localStorage.setItem('coze_user_id', userId);
+            }
+            return userId;
+        }
+
+        // 渲染单条消息
+        function createMessageElement(msg) {
+            const isUser = msg.role === 'user';
+            
+            const wrapper = document.createElement('div');
+            wrapper.className = `flex w-full gap-4 p-4 ${isUser ? 'flex-row-reverse' : 'flex-row'}`;
+            wrapper.dataset.id = msg.id;
+
+            // Avatar
+            const avatar = document.createElement('div');
+            avatar.className = `flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${isUser ? 'bg-blue-500 text-white' : 'bg-purple-500 text-white'}`;
+            avatar.innerHTML = isUser 
+                ? '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-user"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
+                : '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-bot"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>';
+
+            // Content
+            const contentDiv = document.createElement('div');
+            contentDiv.className = `flex flex-col rounded-2xl px-5 py-4 shadow-sm overflow-hidden ${isUser 
+                ? 'max-w-[75%] bg-blue-500 text-white rounded-tr-none' 
+                : 'max-w-[95%] bg-white border border-gray-100 text-gray-800 rounded-tl-none'}`;
+            
+            const messageBody = document.createElement('div');
+            if (isUser) {
+                messageBody.className = 'whitespace-pre-wrap';
+                messageBody.textContent = msg.content;
+            } else {
+                messageBody.className = 'markdown-content';
+                // 确保 marked 已加载
+                if (typeof marked !== 'undefined') {
+                     messageBody.innerHTML = marked.parse(msg.content);
+                } else {
+                     messageBody.textContent = msg.content;
+                }
+            }
+            
+            contentDiv.appendChild(messageBody);
+            wrapper.appendChild(avatar);
+            wrapper.appendChild(contentDiv);
+
+            return wrapper;
+        }
+
+        // 渲染所有消息
+        function renderMessages() {
+            messagesList.innerHTML = '';
+            state.messages.forEach(msg => {
+                messagesList.appendChild(createMessageElement(msg));
+            });
+            scrollToBottom();
+        }
+
+        // 更新最后一条消息（用于流式输出）
+        function updateLastMessage(content) {
+            const lastMsgIdx = state.messages.length - 1;
+            if (lastMsgIdx >= 0) {
+                state.messages[lastMsgIdx].content = content;
+                
+                // 查找 DOM 中最后一条消息并更新内容
+                const lastMsgEl = messagesList.lastElementChild;
+                if (lastMsgEl) {
+                    const contentContainer = lastMsgEl.querySelector(state.messages[lastMsgIdx].role === 'user' ? '.whitespace-pre-wrap' : '.markdown-content');
+                    if (contentContainer) {
+                        if (state.messages[lastMsgIdx].role === 'user') {
+                            contentContainer.textContent = content;
+                        } else {
+                             // 确保 marked 已加载
+                            if (typeof marked !== 'undefined') {
+                                contentContainer.innerHTML = marked.parse(content);
+                            } else {
+                                contentContainer.textContent = content;
+                            }
+                        }
+                    }
+                }
+                scrollToBottom();
+            }
+        }
+
+        function scrollToBottom() {
+            messagesEnd.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // 自动调整 Textarea 高度
+        function adjustTextareaHeight() {
+            chatInput.style.height = 'auto';
+            chatInput.style.height = `${Math.min(chatInput.scrollHeight, 128)}px`;
+        }
+
+        // 创建"思考中"指示器（气泡形式）
+        function createTypingIndicator() {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'flex w-full gap-4 p-4 flex-row thinking-bubble';
+            wrapper.id = 'typing-indicator';
+
+            // AI Avatar
+            const avatar = document.createElement('div');
+            avatar.className = 'flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-purple-500 text-white';
+            avatar.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-bot"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>';
+
+            // Content with typing dots
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'flex flex-col rounded-2xl px-5 py-4 shadow-sm bg-white border border-gray-100 text-gray-800 rounded-tl-none';
+            
+            const typingContent = document.createElement('div');
+            typingContent.className = 'flex items-center';
+            typingContent.innerHTML = `
+                <div class="typing-indicator">
+                    <span class="dot"></span>
+                    <span class="dot"></span>
+                    <span class="dot"></span>
+                </div>
+                <span class="thinking-text">思考中...</span>
+            `;
+            
+            contentDiv.appendChild(typingContent);
+            wrapper.appendChild(avatar);
+            wrapper.appendChild(contentDiv);
+
+            return wrapper;
+        }
+
+        // 显示思考指示器
+        function showTypingIndicator() {
+            // 如果已存在，先移除
+            removeTypingIndicator();
+            
+            currentTypingIndicator = createTypingIndicator();
+            messagesList.appendChild(currentTypingIndicator);
+            scrollToBottom();
+        }
+
+        // 移除思考指示器
+        function removeTypingIndicator() {
+            if (currentTypingIndicator && currentTypingIndicator.parentNode) {
+                currentTypingIndicator.parentNode.removeChild(currentTypingIndicator);
+                currentTypingIndicator = null;
+            }
+        }
+
+        // 查找JSON字符串的结束位置（用于解析流式响应）
+        function findJsonEnd(str, startIndex) {
+            let braceCount = 0;
+            let inString = false;
+            let escaped = false;
+            
+            for (let i = startIndex; i < str.length; i++) {
+                const char = str[i];
+                
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                
+                if (char === '\\') {
+                    escaped = true;
+                    continue;
+                }
+                
+                if (char === '"' && !escaped) {
+                    inString = !inString;
+                    continue;
+                }
+                
+                if (!inString) {
+                    if (char === '{') {
+                        braceCount++;
+                    } else if (char === '}') {
+                        braceCount--;
+                        if (braceCount === 0) {
+                            return i + 1;
+                        }
+                    }
+                }
+            }
+            
+            return -1;
+        }
+
+        // 处理消息内容（解析流式响应）
+        function processMessageContent(content) {
+            let currentIndex = state.lastProcessedIndex;
+            let eventDeltaIndex = content.indexOf('event:conversation.message.delta', currentIndex);
+            
+            while (eventDeltaIndex !== -1) {
+                const nextEventDeltaIndex = content.indexOf('event:conversation.message.delta', eventDeltaIndex + 1);
+                const endEventDeltaIndex = nextEventDeltaIndex !== -1 ? nextEventDeltaIndex : content.length;
+                
+                const dataString = content.substring(eventDeltaIndex, endEventDeltaIndex);
+                const dataPrefixIndex = dataString.indexOf('data:');
+                
+                if (dataPrefixIndex !== -1) {
+                    const jsonStartIndex = dataPrefixIndex + 5;
+                    const jsonEndIndex = findJsonEnd(dataString, jsonStartIndex);
+                    
+                    if (jsonEndIndex !== -1) {
+                        try {
+                            const jsonString = dataString.substring(jsonStartIndex, jsonEndIndex);
+                            const dataObject = JSON.parse(jsonString);
+                            // 只检查 content 是否存在，不再严格检查 type === 'answer'
+                            // 这样可以兼容不同的 Coze Bot 返回格式
+                            if (dataObject.content) {
+                                const messageId = dataObject.id || 'default';
+                                state.messageQueue.push({ content: dataObject.content, messageId });
+                            }
+                            currentIndex = eventDeltaIndex + jsonEndIndex;
+                        } catch (error) {
+                            console.error('JSON解析失败:', error);
+                            currentIndex = eventDeltaIndex + dataString.length;
+                        }
+                    } else {
+                        break;
+                    }
+                } else {
+                    currentIndex = eventDeltaIndex + dataString.length;
+                }
+                
+                eventDeltaIndex = nextEventDeltaIndex;
+            }
+            
+            // 检查是否结束
+            const eventDoneIndex = content.indexOf('event:done');
+            if (eventDoneIndex !== -1) {
+                state.lastProcessedIndex = 0;
+                return;
+            }
+            
+            state.lastProcessedIndex = currentIndex;
+            processQueue();
+        }
+
+        // 处理消息队列
+        function processQueue() {
+            if (!state.isTyping && state.messageQueue.length > 0) {
+                state.isTyping = true;
+                const message = state.messageQueue.shift();
+                typeMessage(message.content, message.messageId);
+            }
+        }
+
+        // 打字机效果
+        function typeMessage(content, messageId) {
+            // 如果当前消息ID与之前不同，说明是新的回复部分，需要创建新气泡
+            if (state.currentMessageId !== messageId) {
+                state.currentMessageId = messageId;
+                state.currentMessageContent = '';
+                
+                // 为新的消息部分创建新的气泡
+                const newMsgId = messageId || Date.now().toString();
+                state.messages.push({
+                    id: newMsgId,
+                    role: 'assistant',
+                    content: ''
+                });
+                messagesList.appendChild(createMessageElement(state.messages[state.messages.length - 1]));
+                scrollToBottom();
+            }
+            
+            // 将新内容添加到当前消息内容
+            state.currentMessageContent += content;
+            
+            // 更新最后一条消息
+            updateLastMessage(state.currentMessageContent);
+            
+            // 完成当前消息处理
+            state.isTyping = false;
+            processQueue();
+        }
+
+        // 发送消息处理 - 直接调用 Coze API
+        async function handleSubmit(e) {
+            if (e) e.preventDefault();
+            
+            const content = chatInput.value.trim();
+            if (!content || state.isLoading) return;
+
+            // 重置消息处理状态
+            state.currentMessageId = null;
+            state.currentMessageContent = '';
+            state.messageQueue = [];
+            state.lastProcessedIndex = 0;
+
+            // 添加用户消息
+            state.messages.push({
+                id: Date.now().toString(),
+                role: 'user',
+                content: content
+            });
+            renderMessages();
+
+            // 清空输入
+            chatInput.value = '';
+            adjustTextareaHeight();
+            sendBtn.disabled = true;
+            
+            // 设置加载状态并显示思考指示器
+            state.isLoading = true;
+            showTypingIndicator();
+
+            // 准备发送历史消息（转换为 Coze API 格式）
+            const additionalMessages = state.messages
+                .filter(m => m.id !== 'welcome')
+                .map(m => ({
+                    role: m.role,
+                    content: m.content,
+                    content_type: 'text'
+                }));
+
+            try {
+                // 直接调用 Coze API
+                const response = await fetch(COZE_CONFIG.apiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${COZE_CONFIG.accessToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        bot_id: COZE_CONFIG.botId,
+                        user_id: state.userId,
+                        additional_messages: additionalMessages,
+                        stream: true,
+                        auto_save_history: true
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`API请求失败: ${response.status}`);
+                }
+
+                // 处理流式响应
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let messageContent = '';
+                let hasReceivedFirstContent = false; // 标记是否已收到第一条内容
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        console.log('流式响应结束');
+                        break;
+                    }
+                    
+                    messageContent += decoder.decode(value, { stream: true });
+                    
+                    // 检查是否有实际内容要显示（首次收到内容时移除思考指示器）
+                    // 只要检测到 delta 事件且包含 content 字段，就认为有内容返回
+                    if (!hasReceivedFirstContent && messageContent.includes('event:conversation.message.delta') && messageContent.includes('"content"')) {
+                        hasReceivedFirstContent = true;
+                        
+                        // 移除思考指示器
+                        removeTypingIndicator();
+                        
+                        // 注意：不在这里创建气泡，气泡的创建由 typeMessage 函数根据 messageId 动态处理
+                        // 这样可以支持多个不同 messageId 的回复部分，每个部分都会有独立的气泡
+                    }
+                    
+                    // 只有在已经移除思考指示器后才处理内容
+                    if (hasReceivedFirstContent) {
+                        processMessageContent(messageContent);
+                    }
+                }
+
+            } catch (error) {
+                console.error('请求异常:', error);
+                
+                // 移除思考指示器
+                removeTypingIndicator();
+                
+                // 显示错误消息
+                const lastMsg = state.messages[state.messages.length - 1];
+                if (!lastMsg || lastMsg.role !== 'assistant') {
+                    state.messages.push({
+                        id: (Date.now() + 1).toString(),
+                        role: 'assistant',
+                        content: `请求失败: ${error.message || '未知错误'}`
+                    });
+                    renderMessages();
+                } else {
+                    updateLastMessage(`请求失败: ${error.message || '未知错误'}`);
+                }
+            } finally {
+                state.isLoading = false;
+                removeTypingIndicator();
+            }
+        }
+
+        // 事件监听
+        chatInput.addEventListener('input', () => {
+            adjustTextareaHeight();
+            sendBtn.disabled = !chatInput.value.trim();
+        });
+
+        chatInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSubmit();
+            }
+        });
+
+        chatForm.addEventListener('submit', handleSubmit);
+
+        // 初始化渲染
+        renderMessages();
+    </script>
+</body>
+</html>
+
